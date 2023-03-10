@@ -1,12 +1,22 @@
-#
-# The falcon-bot package requires the following packages to be installed
-#
+##########################################################################
+# The falcon-bot package requires the following packages to be installed #
+##########################################################################
+
+# Packages needed for our Discord bot to speak Discord API
 discord
-pypng
 python-dotenv
-pyqrcode
 
 # Falcon libary dependancies
 # TODO: Make the entire package and deps a sane setup environment
 numpy
 pycryptodome
+
+# Tools for QR code generation and processing
+pypng
+pyqrcode
+#TODO: write setup file that installs the zbar shared libary
+# if working on OSX: 
+#   - brew install zbar
+#   - add symlink: https://stackoverflow.com/questions/71984213/macbook-m1raise-importerrorunable-to-find-zbar-shared-library-importerror
+pyzbar[scripts]
+Pillow
