@@ -29,7 +29,7 @@ def sign_message(message, truncate:int):
 
     logger.info('Signature generation triggered...')
     logger.debug(f'Received message: {message.content}')
-    logger.debug(f'Truncated message: {message.content[13:]}')
+    logger.debug(f'Truncated message: {message.content[truncate:]}')
     
     # Remove str() formatting and return
     return str(b85encode(sig))[2:-1]
@@ -82,15 +82,17 @@ async def on_message(message):
     if message.content.startswith('$pubkey'):
         await message.channel.send(pk.savePublicKey(out='memory'))
 
-    # if message.content.startswith('$qrsig'):
-    #     import pyqrcode
-    #     sig = sign_message(message, 8)
-    #     sigQRData = pyqrcode.create(sig)
-    #     sigBuffer = io.BytesIO()
-    #     sigQRData.png(sigBuffer)
-    #     sigImg = discord.File(sigBuffer)
+    if message.content.startswith('$qrsign'):
+        import pyqrcode
+        sigBuffer = io.BytesIO()
+        sig = sign_message(message, 8)
+        sigQRData = pyqrcode.create(sig)
+        sigQRData.png(sigBuffer)
+        sigBuffer.seek(0)
+        sigImg = discord.File(sigBuffer)
+        sigImg.filename = 'sig.png'
         
-    #     await message.channel.send(file=sigImg)
+        await message.channel.send(file=sigImg)
         
     
 
