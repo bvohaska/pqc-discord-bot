@@ -1,0 +1,12 @@
+#
+# The falcon-bot package requires the following packages to be installed
+#
+discord
+pypng
+python-dotenv
+pyqrcode
+
+# Falcon libary dependancies
+# TODO: Make the entire package and deps a sane setup environment
+numpy
+pycryptodome
