@@ -28,12 +28,6 @@ DISCORD_BOT_SECRET_KEY_PATH = 'falconSecretKey.key'
 # Set the logging level
 DISCORD_BOT_LOG_LEVEL = logging.INFO
 
-# Configure the logging level
-logging.basicConfig(level=DISCORD_BOT_LOG_LEVEL)
-
-# Create a default logger with this configuration
-DISCORD_BOT_LOGGER = logging.getLogger(__name__)
-
 ############################
 # Discord Bot Permissions  #
 ############################
@@ -49,11 +43,14 @@ DISCORD_BOT_INTENTS.message_content = True
 # Discord Message Patterns #
 ############################
 # Text Trigger Patterns
+PUBKEY = ('$pubkey ', '$publickey')
 SIGN_MESSAGE = '$sign '
 VERIFY_MESSAGE = '$verify '
 QR_SIGN = '$qrsign '
 QR_VERIFY = '$qrverify '
-END_MSG = '!ENDMSG'
+
+# QR Code Message Terminator String
+END_MSG = b'!ENDMSG'
 
 # Length of trigger patters for truncation
 SIGN_TRUNCATE = len(SIGN_MESSAGE)

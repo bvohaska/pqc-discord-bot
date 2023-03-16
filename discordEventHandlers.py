@@ -1,15 +1,116 @@
 from base64 import b85decode, b85encode
+from datetime import datetime
 import discord
 import io
+from logging import getLogger, basicConfig
 from os import path
 from PIL import Image
 import pyqrcode
 from pyzbar.pyzbar import decode
-from typing import Any, Coroutine
+from typing import Any, Tuple
 
 # local imports
 import configuration as conf
 from falcon import falconlib
+
+# Configure the logging level and create the logger for this module
+basicConfig(level=conf.DISCORD_BOT_LOG_LEVEL)
+DISCORD_BOT_LOGGER = getLogger(__name__)
+
+
+def serialize_qr_code_for_discord(
+        message_string:str, 
+        message_terminator:str,
+        signature_string:str,
+        filename:str,
+        filename_pattern:Any) -> discord.File:
+    """Create a QR code from some data and return a discord file
+
+    The logic for this function is as follows:
+        (1) Append a terminator string to the encoded bytes so we know when to 
+            stop reading the message when deserializing. This is done in a naive way
+        (2) Create a QR code (scaled properly so the image can be read by a regular camera)
+        (3) Save the QR code into a memory buffer
+        (4) Convert the bytes in the memory buffer into a PNG
+        (5) Set a filename pattern (what the file will be called when a user downloads the file)
+        (6) Save the memory buffer as a discord file object and send to the server
+
+    Args:
+        message_string (str):
+        message_terminator (str):
+        signature_string (str):
+        filename (str):
+        filename_pattern (Any):
+
+    Returns:
+        discord.File:
+
+    """
+    sig_QR_data = pyqrcode.create(message_string + message_terminator + signature_string)
+    sig_buffer = io.BytesIO()
+    sig_QR_data.png(sig_buffer, scale=conf.QR_CODE_SIZE)
+
+    # Set the read pointer of the buffer to the beginning so it can be read
+    sig_buffer.seek(0)
+
+    if filename == 'sig.png':
+        if filename_pattern != None:
+            filename = filename_pattern()
+        else:
+            filename = f'sig{datetime.now().strftime("%d/%m/%Y-%H:%M:%S")}.png'
+    sig_img = discord.File(fp=sig_buffer, filename=filename)
+
+    return sig_img
+
+
+def serialize_text_for_discord(unsafe_text:str) -> str:
+    """Ensure text can be copied exactly by a user 
+        
+        base 85 encoding uses a larger map of characters then base 64. Some of these characters
+        are used by discord to render text as Markdown.
+
+        Sometimes discord likes to replace certain characters with a rendering in Markdown. For
+        example, the character ` will be rendered as a clock comment if followed by another ` char-
+        -acter. In a similar fashion, ``` will create a code block when match with another ```. 
+        This is bad because the user copying this string will not be able to copy the rendered `
+        or ``` characters and will cause signature verification to fail.
+            
+        Args:
+            unsafe_text (str): A string that might not be rendered correctly to the user
+
+        Returns:
+            str: a string with text that should render safely to a discord user
+
+        TODO:
+            * Quick Fix: Add code block quotes to escape the ` character; won't work in general 
+                (i.e if there is a ``` in the signature)
+            *.replace('`','\`'); add to VERIFY as well.
+    """
+    return '```' + unsafe_text.replace('`','\`') + '```'
+
+
+def deserialize_qr_code_for_discord(
+    raw_bytes:bytes, 
+    message_terminator:bytes = conf.END_MSG
+) -> Tuple[bytes, bytes]:
+    """
+    """    
+    img_data = Image.open(io.BytesIO(raw_bytes))
+    qr_data_byte_string= decode(img_data)[0].data
+
+    message_start = qr_data_byte_string.find(message_terminator)+len(message_terminator)
+    encoded_signature = qr_data_byte_string[message_start:]
+    message_bytes = qr_data_byte_string[:qr_data_byte_string.find(message_terminator)]
+    
+    signature_bytes = b85decode(encoded_signature)
+
+    return message_bytes, signature_bytes
+
+
+def deserialize_text_for_discord(safe_text:str) -> str:
+    """Ensure safe text is properly deserialized
+    """
+    return safe_text.replace('\`','`')
 
 
 def sign_and_encode_message(
@@ -31,9 +132,9 @@ def sign_and_encode_message(
         str: The resulting signature encoded as a base 85 string
 
     """
-    conf.DISCORD_BOT_LOGGER.info('Signature generation triggered...')
-    conf.DISCORD_BOT_LOGGER.debug(f'Received message: {message}')
-    conf.DISCORD_BOT_LOGGER.debug(f'Truncated message: {message[truncate:]}')
+    DISCORD_BOT_LOGGER.info('Signature generation triggered...')
+    DISCORD_BOT_LOGGER.debug(f'Received message: {message}')
+    DISCORD_BOT_LOGGER.debug(f'Truncated message: {message[truncate:]}')
     
     # Convert the message string into bytes
     message_bytes = message[truncate:].encode(conf.STANDARD_ENCODING)
@@ -44,7 +145,7 @@ def sign_and_encode_message(
     # Encode the signature into a base 85 encoded string
     encoded_sig = str(b85encode(sig))
 
-    conf.DISCORD_BOT_LOGGER.debug(f'Encoded Signature w/ python formatting: {encoded_sig}')
+    DISCORD_BOT_LOGGER.debug(f'Encoded Signature w/ python formatting: {encoded_sig}')
     
     # Return base 85 encoded string without python str() prefix/suffixs
     return encoded_sig[2:-1]
@@ -76,8 +177,8 @@ class FalconClient(discord.Client):
         public key. Ensure that the discord.Client super class is initialized.
         
         Args:
-            path_to_secret_key (str):
-            intents (discord.Intents):
+            path_to_secret_key (str): the path to the Falcon secret key file
+            intents (discord.Intents): a set of discord intents that tells the bot what it can do
 
         """
         self.security_level = 512
@@ -91,11 +192,10 @@ class FalconClient(discord.Client):
 
         super().__init__(intents=intents, **options)
 
-
-    async def _check_for_message_errors(self,
-            message:discord.Message, 
+    def _check_for_message_errors(self,
+            content:str, 
             truncate:int
-        ) -> Coroutine:
+        ) -> str:
         '''Check received discord messages for any issues (defined here)
 
         Args:
@@ -104,147 +204,182 @@ class FalconClient(discord.Client):
                 bot to gobble up this message) and a single space that seperates the message from the 
                 trigger.
         Returns:
-            awaitable (Coroutine): An error message we want to send to discord
+            str: An error message we want to send to discord
         
         TODO:
             * Convert this to use a standard error class
         '''
         # Error 1: Message too long
-        if len(message.content) > conf.MAX_MESSAGE_SIZE:
-            await message.channel.send("I don't want to sign a message that long!")
+        if len(content) > conf.MAX_MESSAGE_SIZE:
+            return "I don't want to sign a message that long!"
         # Error 2: No message content (just the trigger word and a space)
-        if len(message.content) < truncate+1:
-            await message.channel.send("You have to supply a message!")
+        if len(content) < truncate+1:
+            return "You have to supply a message!"
     
+    def _sign_discord_qrcode_message(self, 
+        message: discord.Message, 
+        truncate: int, 
+        filename:str = 'sig.png',
+        filename_pattern: str = None
+    ) -> discord.File:
+        """Sign a message and return the result as a QR code
 
-    def _make_text_copiable(unsafe_text:str) -> str:
-        """Ensure text can be copied exactly by a user (no rendering out ` or other characters)
-            
+        The logic of this function is as follows:
+            (1) Sign the text component of the discord message (we only accept text)
+            (2) Create and return QR code as a discord file object
+
+        Args:
+            message (discord.Message):
+            truncate (int):
+            filename (str):
+            filename_pattern (callable):
+
+        Returns:
+            discord.File:
+
         TODO:
-            * Quick Fix: Add code block quotes to escape the ` character; won't work in general 
-                (i.e if there is a ``` in the signature)
-            *.replace('`','\`'); add to VERIFY as well.
+            * check that truncation is correct and is not including the character ` `
         """
-        return '```' + unsafe_text + '```'
 
+        sig = sign_and_encode_message(message.content, truncate, self.secret_key)
+        message_string = message.content[truncate:]
+        sig_img = serialize_qr_code_for_discord(
+            message_string = message_string,
+            message_terminator = conf.END_MSG.decode('utf-8'),
+            signature_string = sig,
+            filename = filename,
+            filename_pattern = filename_pattern
+        )
+        
+        return sig_img
+
+    def _sign_discord_text_message(self, message: str, truncate:int) -> str:
+        """Sign the content of a discord message when triggered
+        
+            Only when the SIGN_MESSAGE trigger has been used should this event trigger
+
+            Args:
+                message (discord.Message):
+
+            Returns:
+                Coroutine: A discord message with a base85 encoded signature
+
+        """
+        has_errors = self._check_for_message_errors(content=message, truncate=truncate)
+        if has_errors != None:
+            return has_errors
+        
+        response = sign_and_encode_message(
+            message=message, 
+            truncate=truncate, 
+            secret_key=self.secret_key
+        )
+        response = serialize_text_for_discord(response)
+        DISCORD_BOT_LOGGER.debug(f'In sign discord message (message): {message}')
+        DISCORD_BOT_LOGGER.debug(f'Generated response to the message: {response}')
+
+        return response
+
+    async def _verify_discord_message(self, message: discord.Message, truncate: int) -> str:
+        """Determine if the signature is valid for a given message
+
+        The logic of this function is as follows:
+            (1) does the message have attachments? If list contains elements => the attachment should be a QR code
+                (a) Read the image attachment as bytes
+                (b) Try to decode the QR code into a PNG for processing
+                (c) Parse the data into a message (bytes) and signature (bytes)
+                (d) Result will comply with interface (which is not recorded yet)
+            (2) If not, this is a text signature
+                (a) Split message into [message] and [signature]
+                (b) Decode the base 85 encoded signature into bytes
+                (c) Convert the message into bytes
+            (3) Determine if the signature is valid
+                (a) If yes, send success
+                (b) If not, send a failure
+
+        Args:
+            message (discord.Message): 
+            A number of characters that represents the trigger word (which caused the 
+            bot to gobble up this message) and a single space that seperates the message from the 
+            trigger.
+
+        Returns:
+            Couroutine: a discord message with the result of the verification OR an error message
+
+        TODO:
+            * check that the message txt has a space between the trigger and actual message
+            * catch different flavors of exceptions
+        """
+        try:
+            # HAS QRCODE?
+            if message.attachments:
+                DISCORD_BOT_LOGGER.debug(f"Verifying QR Code signature...")
+                attachment_as_bytes = await message.attachments[0].read()
+                message_bytes, signature_bytes = deserialize_qr_code_for_discord(attachment_as_bytes, conf.END_MSG)
+            # NOPE, JUST TXT
+            else:
+                DISCORD_BOT_LOGGER.debug(f"Verifying text signature...")
+                deserialized_message = deserialize_text_for_discord(message.content[truncate:])
+                message_components = deserialized_message.split(' ')
+                message_bytes = ' '.join(message_components[:-1]).encode(conf.STANDARD_ENCODING)
+                signature_bytes = b85decode(message_components[-1])
+
+            DISCORD_BOT_LOGGER.debug(f"Message Bytes: {message_bytes}")
+            DISCORD_BOT_LOGGER.debug(f"Signature Bytes: {signature_bytes}")
+
+            # IS VALID?
+            if self.public_key.verify(message_bytes, signature_bytes):
+                return 'The signature is legitimate!'
+            else:
+                return 'The signature failed verification!'
+        
+        except Exception as e:
+            DISCORD_BOT_LOGGER.error('Ouch. Exception in $verify', exc_info=True)
+            return 'hmmm...something went wrong :-('
 
     async def on_ready(self):
         """Basic login message for the bot
-        """
-        conf.DISCORD_BOT_LOGGER.info(f'We have logged in as {self.user}')
 
+        Log that the bot has successfully connected to discord
+        
+        Args:
+            None
+        Returns:
+            None
+        """
+        DISCORD_BOT_LOGGER.info(f'We have logged in as {self.user}')
 
     async def on_message(self,message:discord.Message):
+        """Return a response if a message contains a bot command we recognize
+
+        Args:
+            message (discord.Message): a discord message object that also includes text content and
+                a list of attachments if they exist.
         """
-        """
+
         # DO NOTHING IF THE BOT SENT THE MESSAGE WE ARE LOOKING AT
         if message.author == self.user:
             return
 
         # SIGN MESSAGE
         if message.content.startswith(conf.SIGN_MESSAGE):
-            """Sign the content of a discord message when triggered
-            
-                Only when the SIGN_MESSAGE trigger has been used should this event trigger
-            """
-            self._check_for_message_errors(message=message, truncate=conf.SIGN_TRUNCATE)
-            response = sign_and_encode_message(
-                message=message.content, 
-                truncate=conf.SIGN_TRUNCATE, 
-                secret_key=self.secret_key
-            )
-            response = self._make_text_copiable(response)
-            conf.DISCORD_BOT_LOGGER.debug(f'Generated response to the message: {response}')
-
+            DISCORD_BOT_LOGGER.info('Reached Sign Text Message')
+            response = self._sign_discord_text_message(message=message.content, truncate=conf.SIGN_TRUNCATE)
             await message.channel.send(response)
-        
+
         # VERIFY SIGNATURE
         if message.content.startswith((conf.VERIFY_MESSAGE, conf.VERIFY_MESSAGE[:-1])):
-            """ Verify 
-            """
-            lenOfTruncation = conf.VERIFY_TRUNCATE
-            try:
-                # PEP 8: check if list contains elements; this means the message is a QR code
-                if message.attachments:
-                    # Read the image attachment as bytes
-                    raw_bytes_data = await message.attachments[0].read()
-                    # Decode the QR code into a PNG for processing
-                    img_data = Image.open(io.BytesIO(raw_bytes_data))
-                    # Recover the base 85 encoded data from the QR code (the result will be bytes)
-                    qr_data= decode(img_data)[0].data
-                    # Parse the data into a message (bytes) and signature (bytes)
-                    message_bytes = qr_data[:qr_data.find(b'!ENDMSG')]
-                    signature_bytes = b85decode(qr_data[qr_data.find(b'!ENDMSG')+len(b'!ENDMSG'):])
-                else:
-                    # TODO: check that the message has a space between the trigger and actual message
-                    # Split message into [message] and [signature]
-                    message_components = message.content[lenOfTruncation:].split(' ')
-                    # Decode the base 85 encoded signature into bytes
-                    signature_bytes = b85decode(message_components[-1])
-                    # Convert the message into bytes
-                    message_bytes = ' '.join(message_components[:-1]).encode(conf.STANDARD_ENCODING)
-
-                conf.DISCORD_BOT_LOGGER.debug(f"Message Bytes: {message_bytes}")
-                conf.DISCORD_BOT_LOGGER.debug(f"Signature Bytes: {signature_bytes}")
-
-                # Determine if the signature is valid. If yes, send success. If not, send a failure
-                if self.public_key.verify(message_bytes, signature_bytes):
-                    await message.channel.send('The signature is legitimate!')
-                else:
-                    await message.channel.send('The signature failed verification!')
-            
-            # TODO: catch different flavors of exceptions
-            except Exception as e:
-                conf.DISCORD_BOT_LOGGER.error('Ouch. Exception in $verify', exc_info=True)
-                await message.channel.send('hmmm...something went wrong :-(')
+            DISCORD_BOT_LOGGER.info('Reached Verify Message')
+            response = await self._verify_discord_message(message=message, truncate=conf.VERIFY_TRUNCATE)
+            await message.channel.send(response)
 
         # SIGN MESSAGE AND SEND MSG+SIG AS QR CODE
         if message.content.startswith(conf.QR_SIGN):
-            
-            lenOfTruncation = conf.QR_SIGN_TRUNCATE
-            
-            # TODO: check that this truncation is correct and not including the character ` `
-            sig = sign_and_encode_message(message.content, lenOfTruncation, self.secret_key)
-
-            #Add message bytes so the signature is complete as a standalone
-            message_string = message.content[lenOfTruncation:]+'!ENDMSG'
-
-            # Create a QR code and make sure it scales so the image can be read by a camera
-            sig_buffer = io.BytesIO()
-            sig_QR_data = pyqrcode.create(message_string + sig)
-            sig_QR_data.png(sig_buffer, scale=conf.QR_CODE_SIZE)
-
-            # Set the read pointer of the buffer to the beginning so it can be read
-            sig_buffer.seek(0)
-
-            # Set the filename
-            filename_pattern = f'sig.png'
-
-            # Create a file for Discord to use and name it so the file can be readered in the application
-            sig_img = discord.File(fp=sig_buffer, filename=filename_pattern)
-            
-            await message.channel.send(file=sig_img)
-            
-        # READ QR CODE AND VERIFY SIG
-        if message.content.startswith(conf.QR_VERIFY):
-            if len(message.attachments) > 0:
-
-                raw_bytes_data = await message.attachments[0].read()
-                img_data = Image.open(io.BytesIO(raw_bytes_data))
-                qr_data= decode(img_data)[0].data
-                message_bytes = qr_data[:qr_data.find(b'!ENDMSG')]
-                verified = self.public_key.verify(message_bytes, b85decode(qr_data[qr_data.find(b'!ENDMSG')+len(b'!ENDMSG'):]))
-
-                conf.DISCORD_BOT_LOGGER.debug(f'QR Code Bytes: {qr_data}')
-                conf.DISCORD_BOT_LOGGER.debug(f'Message Bytes: {message_bytes}')
-                conf.DISCORD_BOT_LOGGER.info(f'Did the signature verify? {verified}')
-                if verified:
-                    await message.channel.send(f"Message was: \"{message_bytes.decode(conf.STANDARD_ENCODING)}\"\nSignature verified!")
-                else:
-                    await message.channel.send("Signature verification failed!")
-            else:
-                await message.channel.send("Didn't see a QR code :`-(")
+            DISCORD_BOT_LOGGER.info('Reached QR Sign Message')
+            qr_code_file = self._sign_discord_qrcode_message(message=message, truncate=conf.QR_SIGN_TRUNCATE)
+            await message.channel.send(file = qr_code_file)
 
         # SEND PUBLIC KEY (as a base85 encoded string)
-        if message.content.startswith('$pubkey'):
-            await message.channel.send(self.public_key.savePublicKey(out='memory'))
+        if message.content.startswith(conf.PUBKEY):
+            response = self.public_key.savePublicKey(out='memory')
+            message.channel.send(response)
