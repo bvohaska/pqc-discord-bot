@@ -1,6 +1,7 @@
 from base64 import b85decode, b85encode
 from datetime import datetime
 import discord
+from discord.ext import tasks
 import io
 from logging import getLogger, basicConfig
 from os import path
@@ -383,3 +384,20 @@ class FalconClient(discord.Client):
         if message.content.startswith(conf.PUBKEY):
             response = self.public_key.savePublicKey(out='memory')
             message.channel.send(response)
+
+    async def setup_hook(self) -> None:
+        self.read_nfc_chip_background_task.start()
+    
+    @tasks.loop(seconds=20)
+    async def read_nfc_chip_background_task(self):
+        print("I have reached the background task")
+        channel = self.get_channel(int(conf.DISCORD_TEST_CHANNEL_ID))
+        # This isn't an event trigger; we will need to save nfc bytes to memory/disk 
+        # and read them into a buffer. We will then verify the signature and message
+        # and send the message and a welcome text to discord
+        #await channel.send("I am a background test that Brian just built")
+
+    @read_nfc_chip_background_task.before_loop
+    async def wait_for_ready(self):
+        print("Waiting...")
+        await self.wait_until_ready()

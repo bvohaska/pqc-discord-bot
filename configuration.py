@@ -1,12 +1,23 @@
 from discord import Intents
+from dotenv import load_dotenv
 import logging
+from os import getenv
 ##########################################################
 #                Discord Bot Configuration               #
 ##########################################################
 
+load_dotenv('secrets.env')
+
+############################
+#       Load Secrets       #
+############################
+
+DISCORD_BOT_TOKEN = getenv('DISCORD_BOT_AUTH_TOKEN')
+DISCORD_TEST_CHANNEL_ID = getenv('DISCORD_TEST_CHANNEL_ID')
+
 ############################
 #   Constants & Literals   #
-###########################
+############################
 # Set the size of the QR code
 QR_CODE_SIZE = 3
 

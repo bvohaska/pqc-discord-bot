@@ -5,8 +5,6 @@ veryify Falcon signatures. At some point, we may add additional algorithms if re
 
 Author: Brian Vohaska
 """
-from dotenv import load_dotenv
-from os import getenv
 
 # local imports
 import configuration as conf
@@ -15,10 +13,6 @@ import discordEventHandlers as deh
 
 if __name__ == "__main__": 
 
-    # Load the discord bot auth token from the .env file
-    load_dotenv()
-    token = getenv('DISCORD_BOT_AUTH_TOKEN')
-
     # Configure the discord bot
     client = deh.FalconClient(
         intents = conf.DISCORD_BOT_INTENTS, 
@@ -26,4 +20,4 @@ if __name__ == "__main__":
     )
 
     # Run the discord bot
-    client.run(token)
+    client.run(conf.DISCORD_BOT_TOKEN)
