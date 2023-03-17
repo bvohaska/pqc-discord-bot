@@ -390,7 +390,7 @@ class FalconClient(discord.Client):
     
     @tasks.loop(seconds=20)
     async def read_nfc_chip_background_task(self):
-        print("I have reached the background task")
+        #print("I have reached the background task")
         channel = self.get_channel(int(conf.DISCORD_TEST_CHANNEL_ID))
         # This isn't an event trigger; we will need to save nfc bytes to memory/disk 
         # and read them into a buffer. We will then verify the signature and message
